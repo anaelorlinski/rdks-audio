@@ -1,0 +1,52 @@
+[package]
+name = "rdks-audio-decode"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Decodes audio files from their exact first sample, best effort, with a report of what was wrong in the file"
+readme = "README.md"
+keywords = ["audio", "decoder", "gapless", "mp3", "aac"]
+categories = ["multimedia::audio", "multimedia::encoding"]
+publish = false
+
+[features]
+# symphonia's AAC decoder (and its ADTS reader) on Apple platforms too, where the system's decoder is used otherwise:
+# for `Backend::Portable` there, and for comparisons. Off by default so an Apple build bundles no second AAC decoder.
+symphonia-aac = ["symphonia/aac"]
+
+[dependencies]
+# every format and codec but AAC (see the feature and the target section below)
+symphonia = { version = "0.6.1", features = [
+  "adpcm",
+  "alac",
+  "flac",
+  "mp1",
+  "mp2",
+  "mp3",
+  "pcm",
+  "vorbis",
+  "caf",
+  "isomp4",
+  "mkv",
+  "ogg",
+  "aiff",
+  "wav",
+  "ape",
+  "id3v1",
+  "id3v2",
+] }
+# AAC through the system decoder on Apple platforms (HE-AAC and xHE-AAC in full); nothing elsewhere.
+symphonia-adapter-applecoreaudio = { path = "../symphonia-adapter-applecoreaudio" }
+
+# no system AAC decoder there: symphonia's
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+symphonia = { version = "0.6.1", features = ["aac"] }
+
+[dev-dependencies]
+# the tests compare both AAC decoders on every platform
+symphonia = { version = "0.6.1", features = ["aac"] }
+proptest = { version = "1.12", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

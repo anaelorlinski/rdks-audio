@@ -1,0 +1,30 @@
+[package]
+name = "symphonia-adapter-applecoreaudio"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Symphonia AAC decoder (LC, HE-AAC v1 / v2, xHE-AAC) backed by the system decoder of Apple platforms, and an ADTS reader"
+readme = "README.md"
+keywords = ["symphonia", "aac", "adts", "decoder", "coreaudio"]
+categories = ["multimedia::audio", "multimedia::encoding"]
+publish = false
+
+[dependencies]
+symphonia-core = "0.6.1"
+
+# The decoder exists on Apple platforms only; elsewhere the crate registers nothing.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-audio-toolbox = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "AudioConverter",
+  "AudioFormat",
+  "objc2-core-audio-types",
+] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+
+[dev-dependencies]
+symphonia = { version = "0.6.1", default-features = false, features = ["aac", "isomp4", "wav", "pcm"] }
+
+[lints]
+workspace = true

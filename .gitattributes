@@ -1,0 +1,2 @@
+# test fixtures are audio files: never convert line endings
+*/tests/fixtures/** binary
