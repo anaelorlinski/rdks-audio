@@ -186,6 +186,21 @@ impl Header {
             (false, false) => 17,
         }
     }
+
+    /// Layer III: how many bytes of the earlier frames' main data the frame's own starts back into
+    /// (`main_data_begin`: 9 bits in MPEG-1, 8 in MPEG-2 / 2.5), and how many bytes of main data the frame holds.
+    /// None for layers I and II, which have no bit reservoir, and for a frame too short for its side info.
+    fn reservoir(&self, frame: &[u8]) -> Option<(usize, usize)> {
+        if self.layer != 3 {
+            return None;
+        }
+        let at = 4 + if self.crc { 2 } else { 0 };
+        let b = frame.get(at..at + 2)?;
+        let begin =
+            if self.version == 1 { (usize::from(b[0]) << 1) | usize::from(b[1] >> 7) } else { usize::from(b[0]) };
+        let own = frame.len().checked_sub(at + self.side_info())?;
+        Some((begin, own))
+    }
 }
 
 /// A frame at `at`: its header and length. Free format: the length is the distance to the next header of the
@@ -297,6 +312,10 @@ fn walk(file: &[u8], first: usize, h0: &Header, has_header: bool, s: &mut Mp3Sta
     let mut at = first;
     let mut frames = 0u64;
     let mut prev = *h0;
+    // DESIGN D13: main data bytes of the audio frames so far, and the frames that start back further than that
+    let mut held = 0usize;
+    let mut cut_start: Option<(usize, usize, usize)> = None;
+    let mut cut_frames = 0u32;
     while at < file.len() {
         let rest = &file[at..];
         if let Some(tag) = trailing_tag(rest) {
@@ -321,6 +340,14 @@ fn walk(file: &[u8], first: usize, h0: &Header, has_header: bool, s: &mut Mp3Sta
                         Some(Position::Byte(at as u64)),
                         "the channel count changes inside the stream",
                     );
+                }
+                let audio = !(has_header && frames == 0);
+                if audio && let Some((begin, own)) = h.reservoir(&file[at..at + len]) {
+                    if begin > held {
+                        cut_start.get_or_insert((at, begin, held));
+                        cut_frames += 1;
+                    }
+                    held = held.saturating_add(own);
                 }
                 prev = h;
                 frames += 1;
@@ -368,6 +395,14 @@ fn walk(file: &[u8], first: usize, h0: &Header, has_header: bool, s: &mut Mp3Sta
             Some(n) => at = n,
             None => break,
         }
+    }
+    if let Some((at, begin, held)) = cut_start {
+        issues.add(
+            IssueKind::Truncated,
+            cut_frames,
+            Some(Position::Byte(at as u64)),
+            format!("the stream starts cut: a frame needs {begin} bytes of the frames before it, the file has {held}"),
+        );
     }
     s.audio_frames = frames.saturating_sub(u64::from(has_header));
 }
@@ -613,8 +648,19 @@ mod tests {
     /// MPEG-1 layer III, 128 kbit/s, 44.1 kHz, joint stereo: 417 bytes, no padding.
     const HEADER: [u8; 4] = [0xff, 0xfb, 0x90, 0x64];
 
+    /// Side info of a stereo MPEG-1 frame.
+    const SIDE_INFO: usize = 32;
+
+    /// A frame whose main data starts in itself (`main_data_begin` 0).
     fn frame() -> Vec<u8> {
+        frame_back(0)
+    }
+
+    /// A frame whose main data starts `begin` bytes back in the frames before it.
+    fn frame_back(begin: u16) -> Vec<u8> {
         let mut f = HEADER.to_vec();
+        f.extend((begin << 7).to_be_bytes());
+        f.resize(4 + SIDE_INFO, 0);
         f.resize(417, 0x55);
         f
     }
@@ -706,6 +752,27 @@ mod tests {
         assert_eq!(s.audio_frames, 19);
         assert_eq!(s.issues.0.iter().filter(|i| i.kind == IssueKind::Truncated).count(), 1);
         assert!(!s.end_is_stated());
+    }
+
+    #[test]
+    fn a_stream_that_starts_inside_another_is_truncation() {
+        // DESIGN D13: the first frame needs bytes of frames that are not in the file
+        let mut b = frame_back(300);
+        b.extend(stream(&[], 10));
+        let s = read(&b).unwrap();
+        let cut = s.issues.0.iter().find(|i| i.kind == IssueKind::Truncated).expect("cut start");
+        assert_eq!((cut.count, cut.at), (1, Some(Position::Byte(0))));
+        // what earlier frames of the file hold is there: no cut (each frame holds 417 - 36 bytes)
+        let mut b = stream(&info_frame(576, 1080, 3, true), 1);
+        b.extend(frame_back(381));
+        b.extend(frame_back(511));
+        let s = read(&b).unwrap();
+        assert!(!kinds(&s).contains(&IssueKind::Truncated), "{:?}", kinds(&s));
+        // the header frame holds no audio: a frame right after it cannot start back into it
+        let mut b = info_frame(576, 1080, 2, true);
+        b.extend(frame_back(10));
+        b.extend(frame());
+        assert!(kinds(&read(&b).unwrap()).contains(&IssueKind::Truncated));
     }
 
     #[test]

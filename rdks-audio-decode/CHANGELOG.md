@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- MP3: a stream cut at its start (its first frames need bit-reservoir bytes of frames that are not in the file) is
+  `truncated` (DESIGN D13).
+- FLAC: an ID3v1 and / or APEv2 tag after the last frame is left out of the decode, a `junk_outside_audio` note; the
+  last frame was lost and the file reported `truncated` (DESIGN D14).
+
 ## 0.1.0 (unreleased)
 
 - First version: symphonia 0.6.1 for every format; AAC through the system's decoder on Apple platforms

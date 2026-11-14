@@ -60,8 +60,8 @@ fields) is a `tag_damaged` note; the decode goes on and the good frames are kept
 ## D7 Damage in the stream
 
 Bytes that are not a frame between two frames are a `stream_gap`; before the first frame or after the last (not a
-tag) `junk_outside_audio`. A cut last frame, fewer frames than the header frame or the container states, or a stream
-that ends with a read error is `truncated`, counted once per cut. A stated length longer than the decode by less than
+tag) `junk_outside_audio`. A cut last frame, fewer frames than the header frame or the container states, a stream
+that ends with a read error, or an MP3 stream that starts cut (D13) is `truncated`, counted once per cut. A stated length longer than the decode by less than
 one packet is rounding (an edit list in a coarse timescale), not a cut. A change of rate, layer or channel count is a
 `format_change`.
 
@@ -99,3 +99,21 @@ platforms in a normal build (`Error::UnsupportedCodec`). Elsewhere symphonia's A
 (ADTS, `.aac`) go through the adapter's ADTS reader on every platform, ahead of symphonia's: junk inside such a
 stream is a `stream_gap` and the decode goes on; nothing states a trim, so the default 2112 frames apply, counted at
 the stream's rate and scaled to the decoded rate (4224 for HE-AAC with SBR).
+
+## D13 An MP3 stream that starts cut
+
+A layer III frame's main data may start in the frames before it (`main_data_begin`, the bit reservoir: up to 511
+bytes in MPEG-1, 255 in MPEG-2 / 2.5), never before the stream's first frame: an encoder starts the reservoir empty.
+A frame that starts back further than the main data of the audio frames before it in the file (the header frame holds
+none) belongs to a stream cut at its start, by a cut inside a frame or a copy from the middle of a stream; the decoder
+silences what it cannot read (symphonia zeroes those granules). It is `truncated`, one count per such frame. Bytes left
+before the first frame by such a cut stay `junk_outside_audio`. Counting all earlier main data, used or not, keeps
+the rule to cuts: a valid stream never starts back past it.
+
+## D14 Tags after a FLAC stream
+
+FLAC defines no tag after its last frame, but taggers write an ID3v1 tag there, an APEv2 tag, or both (APEv2 then
+ID3v1). symphonia reads them as the end of the last frame and loses that frame (a `truncated` with up to one frame of
+audio missing); flac 1.5 and ffmpeg 8 decode every sample, then report lost sync. They are cut off before the decode,
+found by the `TAG` marker 128 bytes from the end and the APEv2 footer before it, and are a `junk_outside_audio` note;
+every sample stays, and a last frame that really is cut is still `truncated`.

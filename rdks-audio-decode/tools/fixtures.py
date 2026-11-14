@@ -164,6 +164,8 @@ def main():
     run(*ff, "-fflags", "+bitexact", p("b_ffmpeg.m4a"))
     run(*ff, "-fflags", "+bitexact", "-use_editlist", "0", p("c_noedit.m4a"))
     run(*ff, "-fflags", "+bitexact", "-f", "adts", p("adts_ffmpeg.aac"))
+    run("ffmpeg", "-v", "error", "-y", "-i", p("src.wav"), "-c:a", "flac", "-map_metadata", "-1", "-fflags", "+bitexact",
+        p("flac.flac"))
     a = open(p("a_itunes.m4a"), "rb").read()
     h = with_edit(a, EDIT_PRIMING)
     i = without_tag(h)

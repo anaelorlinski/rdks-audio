@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::{decoded, lag, mono};
-use rdks_audio_decode::{Backend, IssueKind, Severity, TrimSource};
+use common::{decoded, fixture, lag, mono};
+use rdks_audio_decode::{Backend, IssueKind, Options, Severity, TrimSource, decode};
 
 /// The delay with nothing stated to remove it: LAME's encoder delay 576 + the decoder's 529.
 const RAW_DELAY: i64 = 576 + 529;
@@ -71,4 +71,38 @@ fn broken_id3_frames_keep_the_good_ones() {
     let t = d.report.issue(IssueKind::TagDamaged).expect("tag issue");
     assert_eq!((t.count, t.severity()), (3, Severity::Note), "{}", t.detail);
     assert!(d.report.is_valid());
+}
+
+/// MPEG-1 layer III frames of a fixture (no CRC, no free format): each frame's offset and its `main_data_begin`.
+fn layer3_frames(b: &[u8]) -> Vec<(usize, usize)> {
+    const KBPS: [usize; 15] = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+    const RATES: [usize; 3] = [44100, 48000, 32000];
+    let mut at = (0..b.len()).find(|&i| b[i] == 0xff && b[i + 1] == 0xfb).unwrap();
+    let mut frames = Vec::new();
+    while at + 6 <= b.len() && b[at] == 0xff && b[at + 1] == 0xfb {
+        let len = 144 * KBPS[usize::from(b[at + 2] >> 4)] * 1000 / RATES[usize::from((b[at + 2] >> 2) & 3)]
+            + usize::from((b[at + 2] >> 1) & 1);
+        frames.push((at, (usize::from(b[at + 4]) << 1) | usize::from(b[at + 5] >> 7)));
+        at += len;
+    }
+    frames
+}
+
+#[test]
+fn a_stream_cut_at_its_start_is_damage() {
+    // DESIGN D13: from a frame whose main data starts in the frames before it
+    let b = std::fs::read(fixture("mp3_noheader.mp3")).unwrap();
+    let frames = layer3_frames(&b);
+    assert!(frames.len() > 10);
+    assert_eq!(frames[0].1, 0, "an encoder starts its stream in the first frame");
+    let &(at, _) = frames[3..].iter().find(|f| f.1 > 0).expect("a frame using the reservoir");
+    let r = decode(b[at..].to_vec(), Some("mp3"), &Options::default()).unwrap().report;
+    let cut = r.issue(IssueKind::Truncated).expect("cut start");
+    assert_eq!(cut.severity(), Severity::Damage, "{}", cut.detail);
+    assert!(!r.is_valid());
+    // from a frame that starts in itself, the stream is whole
+    if let Some(&(at, _)) = frames[3..].iter().find(|f| f.1 == 0) {
+        let r = decode(b[at..].to_vec(), Some("mp3"), &Options::default()).unwrap().report;
+        assert!(r.is_valid(), "{:?}", r.issues);
+    }
 }

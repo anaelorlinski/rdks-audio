@@ -243,6 +243,54 @@ fn is_mp4(data: &[u8], ext: Option<&str>) -> bool {
     ext.is_some_and(|e| MP4_EXTENSIONS.iter().any(|m| e.eq_ignore_ascii_case(m))) || data.get(4..8) == Some(b"ftyp")
 }
 
+/// A FLAC stream: by its extension, else by its `fLaC` marker at the start or after an ID3v2 tag.
+fn is_flac(data: &[u8], ext: Option<&str>) -> bool {
+    const ID3V2_HEADER: usize = 10;
+    if ext.is_some_and(|e| e.eq_ignore_ascii_case("flac")) || data.starts_with(b"fLaC") {
+        return true;
+    }
+    let Some(h) = data.get(..ID3V2_HEADER).filter(|h| h.starts_with(b"ID3")) else { return false };
+    if h[6..].iter().any(|&b| b >= 0x80) {
+        return false;
+    }
+    let size = h[6..].iter().fold(0usize, |n, &b| (n << 7) | usize::from(b));
+    data.get(ID3V2_HEADER + size..).is_some_and(|rest| rest.starts_with(b"fLaC"))
+}
+
+/// The tags written after a FLAC stream's last frame, which FLAC does not define (DESIGN D14): an ID3v1 tag, an
+/// APEv2 tag, or an APEv2 tag then an ID3v1 tag. Where they start and what they are; None when the data ends with
+/// the stream.
+fn tags_after_flac(data: &[u8]) -> Option<(usize, &'static str)> {
+    const ID3V1: usize = 128;
+    const APE_FOOTER: usize = 32;
+    /// APEv2 flags: the tag has a header before its items.
+    const APE_HAS_HEADER: u32 = 1 << 31;
+    let mut end = data.len();
+    let id3v1 = end >= ID3V1 && data[end - ID3V1..].starts_with(b"TAG");
+    if id3v1 {
+        end -= ID3V1;
+    }
+    let mut ape = false;
+    if let Some(f) = end.checked_sub(APE_FOOTER).map(|at| &data[at..end])
+        && f.starts_with(b"APETAGEX")
+    {
+        let word = |at: usize| u32::from_le_bytes([f[at], f[at + 1], f[at + 2], f[at + 3]]) as usize;
+        // the footer's size counts the items and the footer
+        let header = if word(20) as u32 & APE_HAS_HEADER != 0 { APE_FOOTER } else { 0 };
+        if let Some(start) = word(12).checked_add(header).and_then(|n| end.checked_sub(n)) {
+            end = start;
+            ape = true;
+        }
+    }
+    let what = match (ape, id3v1) {
+        (true, true) => "an APEv2 and an ID3v1 tag",
+        (true, false) => "an APEv2 tag",
+        (false, true) => "an ID3v1 tag",
+        (false, false) => return None,
+    };
+    Some((end, what))
+}
+
 fn run(data: Arc<[u8]>, ext: Option<&str>, options: &Options, keep: bool) -> Result<Decoded, Error> {
     if let Some(limit) = options.max_bytes
         && data.len() as u64 > limit
@@ -258,6 +306,17 @@ fn run(data: Arc<[u8]>, ext: Option<&str>, options: &Options, keep: bool) -> Res
             data = fixed.into();
         }
         mp4_audio = mp4::audio(&data);
+    } else if is_flac(&data, ext)
+        && let Some((end, what)) = tags_after_flac(&data)
+    {
+        // read as part of the last frame, they would cut it (DESIGN D14)
+        early.add(
+            IssueKind::JunkOutsideAudio,
+            1,
+            Some(Position::Byte(end as u64)),
+            format!("{what} after the audio ({} bytes), which FLAC does not define: left out", data.len() - end),
+        );
+        data = data[..end].into();
     }
     let known = portable::Known {
         ext,
